@@ -1,11 +1,11 @@
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.svm import SVC
 from sklearn.metrics import f1_score
-from sklearn.model_selection import GridSearchCV
+from sklearn.model_selection import KFold
 from joblib import parallel_backend
 from tqdm import tqdm
 
-# 데이터 불러오기
+# 데이터 로드
 train_data = pd.read_csv('train.csv')
 validation_data = pd.read_csv('validation.csv')
 test_data = pd.read_csv('test.csv')
@@ -13,56 +13,63 @@ test_data = pd.read_csv('test.csv')
 # 결측값을 평균값으로 대체
 train_data.fillna(train_data.mean(), inplace=True)
 validation_data.fillna(validation_data.mean(), inplace=True)
+test_data.fillna(test_data.mean(), inplace=True)
 
-# sleep_stage가 범주형 값인지 확인하고, 필요시 변환
 if train_data['sleep_stage'].dtype != 'int':
     train_data['sleep_stage'] = train_data['sleep_stage'].astype(int)
 if validation_data['sleep_stage'].dtype != 'int':
     validation_data['sleep_stage'] = validation_data['sleep_stage'].astype(int)
 
-# feature와 label 분리
-X_train = train_data.drop(columns=['sleep_stage', 'id'])
-y_train = train_data['sleep_stage']
+# 입력 변수(X)와 타겟 변수(y) 분리
+X = train_data[['pulse']]
+y = train_data['sleep_stage']
 
-X_val = validation_data.drop(columns=['sleep_stage', 'id'])
-y_val = validation_data['sleep_stage']
+# K-fold 교차 검증 설정
+kf = KFold(n_splits=5, shuffle=True, random_state=42)
+f1_scores = []
 
-# RandomForestClassifier 모델 정의
-model = RandomForestClassifier()
-
-# 하이퍼파라미터 그리드 설정
-param_grid = {
-    'n_estimators': [100, 200, 300],
-    'max_depth': [None, 10, 20, 30],
-    'min_samples_split': [2, 5, 10],
-    'min_samples_leaf': [1, 2, 4]
-}
-
-# GridSearchCV 설정
-grid_search = GridSearchCV(estimator=model, param_grid=param_grid, cv=5, scoring='f1_weighted', n_jobs=-1, verbose=2)
-
-# 모델 학습 및 최적화
+# tqdm을 사용하여 K-fold 교차 검증 진행 상황 표시
 with parallel_backend('threading', n_jobs=-1):
-    grid_search.fit(X_train, y_train)
+    for train_index, val_index in tqdm(kf.split(X), desc="K-fold Cross Validation"):
+        X_train, X_val = X.iloc[train_index], X.iloc[val_index]
+        y_train, y_val = y.iloc[train_index], y.iloc[val_index]
 
-# 최적 하이퍼파라미터 출력
-print(f'Best parameters found: {grid_search.best_params_}')
-print(f'Best cross-validation F1 score: {grid_search.best_score_:.2f}')
+        # SVM 모델 학습
+        model = SVC(kernel='rbf', C=1.0, gamma='scale', class_weight='balanced')
+        model.fit(X_train, y_train)
 
-# 최적 모델로 검증 데이터에 대해 예측
-best_model = grid_search.best_estimator_
-y_val_pred = best_model.predict(X_val)
+        # 검증 데이터 예측
+        y_pred_val = model.predict(X_val)
 
-# f1-score 평가
-f1 = f1_score(y_val, y_val_pred, average='weighted')
-print(f'Validation F1 Score with best model: {f1:.2f}')
+        # 검증 데이터 f1 score 계산
+        f1 = f1_score(y_val, y_pred_val, average='weighted')
+        f1_scores.append(f1)
 
-# test 데이터를 사용하여 예측
-X_test = test_data.drop(columns=['id'])
-y_test_pred = best_model.predict(X_test)
+# 교차 검증 결과 출력
+average_f1_score = sum(f1_scores) / len(f1_scores)
+print(f'평균 검증 데이터 f1 score: {average_f1_score:.2f}')
 
-# 예측 결과를 test_data에 추가
-test_data['predicted_sleep_stage'] = y_test_pred
+# 전체 학습 데이터로 모델 학습
+model.fit(X, y)
+
+# 검증 데이터 예측
+X_validation = validation_data[['pulse']]
+y_validation = validation_data['sleep_stage']
+y_pred_validation = model.predict(X_validation)
+
+# 검증 데이터 f1 score 출력
+validation_f1_score = f1_score(y_validation, y_pred_validation, average='weighted')
+print(f'검증 데이터 f1 score: {validation_f1_score:.2f}')
+
+# 테스트 데이터 예측
+X_test = test_data[['pulse']]
+y_pred_test = model.predict(X_test)
+
+# 예측 결과를 test 데이터에 추가
+test_data['predicted_sleep_stage'] = y_pred_test
 
 # 예측 결과 출력
-print(test_data[['id', 'predicted_sleep_stage']])
+print(test_data[['pulse', 'predicted_sleep_stage']])
+
+# 예측 결과 저장
+test_data.to_csv('predicted_test_data.csv', index=False)
